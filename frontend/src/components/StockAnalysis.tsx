@@ -49,7 +49,7 @@ export default function StockAnalysis({ symbol, portfolio, onAnalysisUpdate }: S
         total_value: portfolio.reduce((total, pos) => total + (pos.shares * (pos.currentPrice || 0)), 0)
       } : null
 
-      const response = await fetch(`http://localhost:8000/api/analysis/${symbol}`, {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/api/analysis/${symbol}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

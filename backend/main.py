@@ -7,7 +7,7 @@ import httpx
 import asyncio
 from datetime import datetime
 import structlog
-from langgraph_service import stock_analysis_agent
+from backend.langgraph_service import stock_analysis_agent
 from dotenv import load_dotenv
 
 # 加载环境变量
@@ -239,4 +239,5 @@ async def health_check():
 # 启动服务
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=PORT, reload=True)

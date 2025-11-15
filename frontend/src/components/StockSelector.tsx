@@ -39,7 +39,7 @@ export default function StockSelector({ onStockSelect, selectedStock }: StockSel
     setError('')
     
     try {
-      const response = await fetch(`http://localhost:8000/api/stocks/${symbol.toUpperCase()}/quote`)
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/api/stocks/${symbol.toUpperCase()}/quote`)
       if (!response.ok) {
         throw new Error('股票代码不存在或数据获取失败')
       }
