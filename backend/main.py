@@ -94,10 +94,33 @@ class AlphaVantageService:
             
             data = response.json()
             quote_data = data.get("Global Quote", {})
-            
+
+            # 回退：如报价为空，尝试从日线数据获取最近收盘价
             if not quote_data:
-                raise ValueError(f"无法获取股票 {symbol} 的报价数据")
-            
+                try:
+                    hist_params = {
+                        "function": "TIME_SERIES_DAILY",
+                        "symbol": symbol,
+                        "apikey": self.api_key
+                    }
+                    hist_resp = await self.client.get(self.base_url, params=hist_params)
+                    hist_resp.raise_for_status()
+                    hist = hist_resp.json().get("Time Series (Daily)", {})
+                    if hist:
+                        latest_date = sorted(hist.keys())[-1]
+                        latest = hist[latest_date]
+                        return StockQuote(
+                            symbol=symbol,
+                            price=float(latest.get("4. close", 0)),
+                            change=0.0,
+                            change_percent=0.0,
+                            volume=int(latest.get("5. volume", 0)),
+                            timestamp=datetime.now()
+                        )
+                except Exception:
+                    # 忽略回退失败，按默认值返回
+                    pass
+
             return StockQuote(
                 symbol=symbol,
                 price=float(quote_data.get("05. price", 0)),
@@ -108,7 +131,15 @@ class AlphaVantageService:
             )
         except Exception as e:
             logger.error(f"获取股票报价失败: {symbol}", error=str(e))
-            raise HTTPException(status_code=500, detail=f"获取股票报价失败: {str(e)}")
+            # 降级返回默认值，避免 500
+            return StockQuote(
+                symbol=symbol,
+                price=0.0,
+                change=0.0,
+                change_percent=0.0,
+                volume=0,
+                timestamp=datetime.now()
+            )
     
     async def get_history(self, symbol: str, period: str = "1m") -> List[StockHistory]:
         """获取股票历史数据"""
@@ -125,9 +156,6 @@ class AlphaVantageService:
             data = response.json()
             time_series = data.get("Time Series (Daily)", {})
             
-            if not time_series:
-                raise ValueError(f"无法获取股票 {symbol} 的历史数据")
-            
             history = []
             for date, values in list(time_series.items())[:100]:  # 获取最近100天数据
                 history.append(StockHistory(
@@ -142,7 +170,8 @@ class AlphaVantageService:
             return history
         except Exception as e:
             logger.error(f"获取股票历史数据失败: {symbol}", error=str(e))
-            raise HTTPException(status_code=500, detail=f"获取股票历史数据失败: {str(e)}")
+            # 降级返回空列表，避免 500
+            return []
     
     async def get_technical_indicators(self, symbol: str, indicator: str = "SMA") -> List[TechnicalIndicator]:
         """获取技术指标数据"""

@@ -43,16 +43,13 @@ class StockAnalysisAgent:
         workflow.add_node("portfolio_analysis", self._analyze_portfolio_context)
         workflow.add_node("synthesize_recommendation", self._synthesize_recommendation)
         
-        # 设置边
+        # 设置边（顺序执行，避免并发更新冲突）
         workflow.add_edge(START, "data_collection")
         workflow.add_edge("data_collection", "technical_analysis")
-        workflow.add_edge("data_collection", "news_sentiment_analysis")
-        workflow.add_edge("technical_analysis", "synthesize_recommendation")
-        workflow.add_edge("news_sentiment_analysis", "synthesize_recommendation")
-        
-        # 如果有持仓信息，添加投资组合分析
+        workflow.add_edge("technical_analysis", "news_sentiment_analysis")
+        # 根据是否需要投资组合分析选择下一步
         workflow.add_conditional_edges(
-            "data_collection",
+            "news_sentiment_analysis",
             self._should_analyze_portfolio,
             {
                 True: "portfolio_analysis",
