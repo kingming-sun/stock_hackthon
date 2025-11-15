@@ -1,26 +1,26 @@
 # Web框架
-fastapi==0.104.1
-uvicorn==0.24.0
-pydantic==2.5.0
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
 
 # HTTP客户端
-httpx==0.25.2
-aiohttp==3.9.1
+httpx==0.26.0
+requests==2.31.0
 
-# LangGraph和AI相关
-langgraph==0.0.40
-langchain==0.0.350
-langchain-core==0.1.0
-langchain-community==0.0.10
+# LangChain & OpenAI（升级到新版本，移除 LangGraph）
+langchain==0.1.6
+langchain-openai==0.0.5
+langchain-community==0.0.20
+langchain-core==0.1.10
 
 # 环境变量和配置
 python-dotenv==1.0.0
 
-# 异步支持
-asyncio==3.4.3
-
 # 日志和监控
 structlog==23.2.0
+
+# 数据处理
+pydantic-settings==2.1.0
 
 # 开发工具
 pytest==7.4.3

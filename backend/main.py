@@ -7,7 +7,7 @@ import httpx
 import asyncio
 from datetime import datetime
 import structlog
-from backend.langgraph_service import stock_analysis_agent
+from backend.react_agent_service import stock_analysis_agent
 from dotenv import load_dotenv
 
 # 加载环境变量
