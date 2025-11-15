@@ -328,7 +328,14 @@ export default function Analysis() {
                 <input type="number" placeholder="例如：100000" className="w-full rounded-md border border-border px-3 py-2 bg-muted" value={position.assets || ''} onChange={(e) => setPosition({ ...position, assets: Number(e.target.value) })} />
               </div>
             </div>
-            <button onClick={analyze} disabled={!selected || isAnalyzing} className="w-full mt-2 px-4 py-2 rounded-md bg-muted text-foreground disabled:opacity-50">{isAnalyzing ? '分析中…' : '开始分析'}</button>
+            <button
+              onClick={analyze}
+              disabled={!selected || isAnalyzing}
+              className="w-full mt-2 h-12 rounded-2xl bg-[#0b0b17] text-white disabled:opacity-60 shadow-sm flex items-center justify-center gap-2 hover:brightness-110"
+            >
+              <Sparkles className="h-5 w-5" />
+              {isAnalyzing ? '分析中…' : '开始分析'}
+            </button>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="p-3 bg-muted rounded-lg"><div className="text-xs text-muted-foreground mb-1">持仓市值</div><div>{valueCalc.mv}</div></div>
               <div className="p-3 bg-muted rounded-lg"><div className="text-xs text-muted-foreground mb-1">可用资金</div><div>{valueCalc.cash}</div></div>
