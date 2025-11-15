@@ -18,7 +18,7 @@ type Analysis = {
   recommendation: 'BUY' | 'SELL' | 'HOLD'
   confidence: number
   sentimentLabel: 'positive' | 'neutral' | 'negative' | 'unknown'
-  newsItems: { title?: string; url?: string; time?: string }[]
+  newsItems: { title?: string; url?: string; time?: string; summary?: string }[]
   score: number
 }
 
@@ -88,7 +88,7 @@ async function fetchRealAnalysis(stock: Stock, position?: Position): Promise<Ana
   const macdSignal: '买入' | '卖出' | '观望' = recommendation === 'BUY' ? '买入' : recommendation === 'SELL' ? '卖出' : '观望'
   const confidence = Number((ai.confidence_score || 0).toFixed(2))
   const sentimentLabel = (ai.key_metrics?.sentiment || 'unknown') as Analysis['sentimentLabel']
-  const newsItems = (ai.detailed_analysis?.news_data?.news_items || []).map((n: any) => ({ title: n?.title, url: n?.url, time: n?.time_published }))
+  const newsItems = (ai.detailed_analysis?.news_data?.news_items || []).map((n: any) => ({ title: n?.title, url: n?.url, time: n?.time_published, summary: n?.summary || n?.description }))
   const score = Math.round(50 + (rsi - 50) / 2)
   return { price, changePercent, kline: candles, rsi, macdSignal, boll, kdj: { k: Number(k.toFixed(2)), d, j }, volume: { avg: volumeAvg, today: volumeToday }, levels, summary: ai.summary || '', recommendation, confidence, sentimentLabel, newsItems, score }
 }
@@ -101,24 +101,96 @@ function Progress({ value, color }: { value: number; color: string }) {
   )
 }
 
+function MarkdownText({ text }: { text: string }) {
+  const escapeHtml = (s: string) => s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+  const inline = (s: string) => s
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(?<!\*)\*(.+?)\*(?!\*)/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[(.+?)\]\((https?:[^\)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline">$1</a>')
+  const mdToHtml = (md: string) => {
+    const lines = md.split(/\r?\n/)
+    const blocks: string[] = []
+    let i = 0
+    while (i < lines.length) {
+      const line = lines[i]
+      if (/^###\s+/.test(line)) { blocks.push(`<h3 class="text-sm font-semibold">${inline(escapeHtml(line.replace(/^###\s+/, '')))}</h3>`); i++; continue }
+      if (/^##\s+/.test(line)) { blocks.push(`<h2 class="text-base font-semibold">${inline(escapeHtml(line.replace(/^##\s+/, '')))}</h2>`); i++; continue }
+      if (/^#\s+/.test(line)) { blocks.push(`<h1 class="text-lg font-semibold">${inline(escapeHtml(line.replace(/^#\s+/, '')))}</h1>`); i++; continue }
+      if (/^\s*-\s+/.test(line)) {
+        const items: string[] = []
+        while (i < lines.length && /^\s*-\s+/.test(lines[i])) {
+          items.push(`<li>${inline(escapeHtml(lines[i].replace(/^\s*-\s+/, '')))}</li>`)
+          i++
+        }
+        blocks.push(`<ul class="list-disc pl-5 space-y-1">${items.join('')}</ul>`)
+        continue
+      }
+      if (/^\d+\.\s+/.test(line)) {
+        const items: string[] = []
+        while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+          items.push(`<li>${inline(escapeHtml(lines[i].replace(/^\d+\.\s+/, '')))}</li>`)
+          i++
+        }
+        blocks.push(`<ol class="list-decimal pl-5 space-y-1">${items.join('')}</ol>`)
+        continue
+      }
+      const paragraph: string[] = []
+      while (i < lines.length && lines[i].trim() !== '') {
+        paragraph.push(lines[i])
+        i++
+      }
+      if (paragraph.length) {
+        blocks.push(`<p class="text-sm leading-6 text-muted-foreground">${inline(escapeHtml(paragraph.join(' ')))}</p>`)
+      } else {
+        i++
+      }
+    }
+    return blocks.join('\n')
+  }
+  const html = mdToHtml(text || '')
+  return <div className="space-y-1" dangerouslySetInnerHTML={{ __html: html }} />
+}
+
 function KLineChart({ data }: { data: Candle[] }) {
-  const W = Math.max(600, data.length * 24)
-  const H = 340
-  const P = 28
+  const W = Math.max(640, data.length * 26)
+  const H = 360
+  const PL = 48
+  const PR = 24
+  const PT = 24
+  const PB = 46
   const minV = Math.min(...data.map(d => d.close))
   const maxV = Math.max(...data.map(d => d.close))
   const scaleY = (v: number) => {
     const t = (v - minV) / ((maxV - minV) || 1)
-    return P + (1 - t) * (H - 2 * P)
+    return PT + (1 - t) * (H - PT - PB)
   }
-  const scaleX = (i: number) => P + i * ((W - 2 * P) / Math.max(1, data.length - 1))
+  const scaleX = (i: number) => PL + i * ((W - PL - PR) / Math.max(1, data.length - 1))
   const toPath = (key: 'close' | 'ma5' | 'ma20') => data.map((d, i) => `${i === 0 ? 'M' : 'L'} ${scaleX(i)} ${scaleY((d as any)[key])}`).join(' ')
   const areaPath = () => {
     const top = toPath('close')
     const lastX = scaleX(data.length - 1)
     const firstX = scaleX(0)
-    const bottom = `L ${lastX} ${H - P - 18} L ${firstX} ${H - P - 18} Z`
+    const bottom = `L ${lastX} ${H - PB} L ${firstX} ${H - PB} Z`
     return `${top} ${bottom}`
+  }
+  const yTicks = 5
+  const yStep = (maxV - minV) / yTicks
+  const xIndices = [0, Math.floor(data.length * 0.25), Math.floor(data.length * 0.5), Math.floor(data.length * 0.75), data.length - 1]
+    .filter((i, idx, arr) => i >= 0 && i < data.length && arr.indexOf(i) === idx)
+  const fmt = (s: string) => {
+    const d = new Date(s)
+    if (!Number.isNaN(d.getTime())) {
+      const m = String(d.getMonth() + 1).padStart(2, '0')
+      const dd = String(d.getDate()).padStart(2, '0')
+      return `${m}/${dd}`
+    }
+    return s.slice(5, 10).replace(/-/g, '/')
   }
   const firstPrice = data[0]?.close || 0
   const lastPrice = data[data.length - 1]?.close || 0
@@ -131,29 +203,31 @@ function KLineChart({ data }: { data: Candle[] }) {
         <div className={isPositive ? 'text-green-600' : 'text-red-600'}>{isPositive ? '+' : ''}{changePercent.toFixed(2)}%</div>
       </div>
       <div className="w-full overflow-hidden rounded-lg border border-border bg-background">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-[340px]">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-[360px]">
           <defs>
             <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25} />
               <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
             </linearGradient>
           </defs>
-          <rect x={P} y={P} width={W - 2 * P} height={H - 2 * P - 18} fill="transparent" stroke="#e2e8f0" />
+          <rect x={PL} y={PT} width={W - PL - PR} height={H - PT - PB} fill="#fff" stroke="#e2e8f0" />
+          {Array.from({ length: yTicks + 1 }, (_, k) => (
+            <g key={`h-${k}`}>
+              <line x1={PL} y1={PT + k * ((H - PT - PB) / yTicks)} x2={W - PR} y2={PT + k * ((H - PT - PB) / yTicks)} stroke="#e2e8f0" strokeDasharray="4 4" />
+              <text x={PL - 8} y={PT + k * ((H - PT - PB) / yTicks) + 4} textAnchor="end" fontSize={12} fill="#64748b">{(maxV - k * yStep).toFixed(0)}</text>
+            </g>
+          ))}
           <path d={areaPath()} fill="url(#colorPrice)" />
           <path d={toPath('close')} stroke="#3b82f6" strokeWidth={2} fill="none" />
           <path d={toPath('ma5')} stroke="#8b5cf6" strokeWidth={1.5} fill="none" />
           <path d={toPath('ma20')} stroke="#f59e0b" strokeWidth={1.5} fill="none" />
-          <line x1={P} y1={H - P - 18} x2={W - P} y2={H - P - 18} stroke="#e2e8f0" />
-          {
-            [0, Math.floor(data.length * 0.25), Math.floor(data.length * 0.5), Math.floor(data.length * 0.75), data.length - 1]
-              .filter((i, idx, arr) => i >= 0 && i < data.length && arr.indexOf(i) === idx)
-              .map((i) => (
-                <g key={i}>
-                  <line x1={scaleX(i)} y1={H - P - 18} x2={scaleX(i)} y2={H - P - 12} stroke="#e2e8f0" />
-                  <text x={scaleX(i)} y={H - P} textAnchor="middle" fontSize={12} fill="#64748b">{data[i]?.time}</text>
-                </g>
-              ))
-          }
+          <line x1={PL} y1={H - PB} x2={W - PR} y2={H - PB} stroke="#e2e8f0" />
+          {xIndices.map((i) => (
+            <g key={`v-${i}`}>
+              <line x1={scaleX(i)} y1={H - PB} x2={scaleX(i)} y2={H - PB - 6} stroke="#e2e8f0" />
+              <text x={scaleX(i)} y={H - PB + 18} textAnchor="middle" fontSize={12} fill="#64748b">{fmt(data[i]?.time || '')}</text>
+            </g>
+          ))}
         </svg>
       </div>
       <div className="grid grid-cols-4 gap-3 mt-6">
@@ -218,13 +292,20 @@ function FundamentalAnalysis({ a }: { a: Analysis }) {
       </div>
       <div className="rounded-xl border border-border bg-card p-4">
         <div className="font-semibold mb-2">最新消息</div>
-        <div className="space-y-2">
+        <div className="h-64 overflow-y-auto space-y-2 pr-1">
           {a.newsItems.length === 0 && <div className="text-sm text-muted-foreground">暂无新闻数据</div>}
           {a.newsItems.map((n, i) => (
-            <a key={i} href={n.url || '#'} target="_blank" rel="noopener noreferrer" className="block p-3 rounded-lg bg-muted hover:opacity-90">
-              <div className="text-sm font-medium">{n.title || '新闻'}</div>
-              <div className="text-xs text-muted-foreground">{n.time || ''}</div>
-            </a>
+            <div key={i} className="p-3 rounded-lg bg-muted hover:opacity-90 border border-border/50">
+              <div className="flex items-start justify-between gap-2">
+                <a href={n.url || '#'} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-blue-600 hover:underline">{n.title || '新闻'}</a>
+                <span className="text-xs text-muted-foreground shrink-0">{n.time || ''}</span>
+              </div>
+              {n.summary ? (
+                <div className="mt-2">
+                  <MarkdownText text={n.summary} />
+                </div>
+              ) : null}
+            </div>
           ))}
         </div>
       </div>
@@ -240,7 +321,13 @@ function ChatInterface({ messages, send, presetQs }: { messages: { role: 'user' 
         {messages.length === 0 && <div className="text-center text-sm text-muted-foreground">开始对话，询问交易建议与风险</div>}
         {messages.map((m, i) => (
           <div key={i} className={m.role === 'user' ? 'text-right' : 'text-left'}>
-            <div className={m.role === 'user' ? 'inline-block px-3 py-2 rounded-lg bg-primary text-primary-foreground' : 'inline-block px-3 py-2 rounded-lg bg-muted'}>{m.content}</div>
+            {m.role === 'ai' ? (
+              <div className="inline-block max-w-[80%] px-3 py-2 rounded-lg bg-muted text-foreground">
+                <MarkdownText text={m.content} />
+              </div>
+            ) : (
+              <div className="inline-block max-w-[80%] px-3 py-2 rounded-lg bg-primary text-primary-foreground">{m.content}</div>
+            )}
           </div>
         ))}
       </div>
@@ -441,13 +528,15 @@ export default function Analysis() {
                   <div className="flex items-center gap-2 text-blue-700"><Sparkles className="h-5 w-5" /><div className="font-semibold">AI 投资建议</div></div>
                   <div className="px-3 py-1.5 rounded-full bg-white text-blue-700 text-sm border">置信度 {Math.round(analysis.confidence * 100)}%</div>
                 </div>
-                <div className="mt-3 text-sm text-blue-700 space-y-2">
-                  <div>结论：{analysis.recommendation}</div>
-                  <div>摘要：{analysis.summary || '综合分析显示中性信号'}</div>
-                  <div>关键位：阻力 {analysis.levels.resistance} / 支撑 {analysis.levels.support}</div>
-                  <div>{position.shares > 0 ? `持仓估算盈亏：${((analysis.price - position.cost) * position.shares).toFixed(2)}` : '建议：无持仓可分批建仓，控制仓位'}</div>
-                  <div className="mt-2 text-xs bg-white border rounded-md p-3 text-amber-600">风险提示：市场瞬时波动较大，请合理控制仓位与止损，避免重仓追高</div>
+              <div className="mt-3 text-sm text-blue-700 space-y-2">
+                <div>结论：{analysis.recommendation}</div>
+                <div className="bg-white/60 rounded-md p-3">
+                  <MarkdownText text={analysis.summary || '综合分析显示中性信号'} />
                 </div>
+                <div>关键位：阻力 {analysis.levels.resistance} / 支撑 {analysis.levels.support}</div>
+                <div>{position.shares > 0 ? `持仓估算盈亏：${((analysis.price - position.cost) * position.shares).toFixed(2)}` : '建议：无持仓可分批建仓，控制仓位'}</div>
+                <div className="mt-2 text-xs bg-white border rounded-md p-3 text-amber-600">风险提示：市场瞬时波动较大，请合理控制仓位与止损，避免重仓追高</div>
+              </div>
               </div>
               <ChatInterface messages={messages} send={send} presetQs={["是否适合加仓？", "短线风险有哪些？", "目标价多久可达？"]} />
             </div>
