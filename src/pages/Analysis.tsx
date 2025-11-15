@@ -103,8 +103,8 @@ function Progress({ value, color }: { value: number; color: string }) {
 
 function KLineChart({ data }: { data: Candle[] }) {
   const W = Math.max(600, data.length * 24)
-  const H = 320
-  const P = 24
+  const H = 340
+  const P = 28
   const minV = Math.min(...data.map(d => d.close))
   const maxV = Math.max(...data.map(d => d.close))
   const scaleY = (v: number) => {
@@ -117,7 +117,7 @@ function KLineChart({ data }: { data: Candle[] }) {
     const top = toPath('close')
     const lastX = scaleX(data.length - 1)
     const firstX = scaleX(0)
-    const bottom = `L ${lastX} ${H - P} L ${firstX} ${H - P} Z`
+    const bottom = `L ${lastX} ${H - P - 18} L ${firstX} ${H - P - 18} Z`
     return `${top} ${bottom}`
   }
   const firstPrice = data[0]?.close || 0
@@ -131,18 +131,29 @@ function KLineChart({ data }: { data: Candle[] }) {
         <div className={isPositive ? 'text-green-600' : 'text-red-600'}>{isPositive ? '+' : ''}{changePercent.toFixed(2)}%</div>
       </div>
       <div className="w-full overflow-hidden rounded-lg border border-border bg-background">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-[320px]">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-[340px]">
           <defs>
             <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25} />
               <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
             </linearGradient>
           </defs>
-          <rect x={P} y={P} width={W - 2 * P} height={H - 2 * P} fill="transparent" stroke="#e2e8f0" />
+          <rect x={P} y={P} width={W - 2 * P} height={H - 2 * P - 18} fill="transparent" stroke="#e2e8f0" />
           <path d={areaPath()} fill="url(#colorPrice)" />
           <path d={toPath('close')} stroke="#3b82f6" strokeWidth={2} fill="none" />
           <path d={toPath('ma5')} stroke="#8b5cf6" strokeWidth={1.5} fill="none" />
           <path d={toPath('ma20')} stroke="#f59e0b" strokeWidth={1.5} fill="none" />
+          <line x1={P} y1={H - P - 18} x2={W - P} y2={H - P - 18} stroke="#e2e8f0" />
+          {
+            [0, Math.floor(data.length * 0.25), Math.floor(data.length * 0.5), Math.floor(data.length * 0.75), data.length - 1]
+              .filter((i, idx, arr) => i >= 0 && i < data.length && arr.indexOf(i) === idx)
+              .map((i) => (
+                <g key={i}>
+                  <line x1={scaleX(i)} y1={H - P - 18} x2={scaleX(i)} y2={H - P - 12} stroke="#e2e8f0" />
+                  <text x={scaleX(i)} y={H - P} textAnchor="middle" fontSize={12} fill="#64748b">{data[i]?.time}</text>
+                </g>
+              ))
+          }
         </svg>
       </div>
       <div className="grid grid-cols-4 gap-3 mt-6">
@@ -210,7 +221,7 @@ function FundamentalAnalysis({ a }: { a: Analysis }) {
         <div className="space-y-2">
           {a.newsItems.length === 0 && <div className="text-sm text-muted-foreground">暂无新闻数据</div>}
           {a.newsItems.map((n, i) => (
-            <a key={i} href={n.url || '#'} className="block p-3 rounded-lg bg-muted hover:opacity-90">
+            <a key={i} href={n.url || '#'} target="_blank" rel="noopener noreferrer" className="block p-3 rounded-lg bg-muted hover:opacity-90">
               <div className="text-sm font-medium">{n.title || '新闻'}</div>
               <div className="text-xs text-muted-foreground">{n.time || ''}</div>
             </a>
@@ -275,10 +286,26 @@ export default function Analysis() {
     }
   }
 
-  const send = (q: string) => {
+  const send = async (q: string) => {
     setMessages((m) => [...m, { role: 'user', content: q }])
-    const reply = analysis ? `结论：${analysis.recommendation}；置信度：${Math.round(analysis.confidence * 100)}%；摘要：${analysis.summary}` : '请先完成分析'
-    setMessages((m) => [...m, { role: 'ai', content: reply }])
+    try {
+      if (!selected) {
+        setMessages((m) => [...m, { role: 'ai', content: '请先选择股票并完成分析' }])
+        return
+      }
+      const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+      const body = {
+        question: q,
+        portfolio: position.shares || position.cost || position.assets ? { positions: { [selected.symbol]: { shares: position.shares || 0, avg_cost: position.cost || 0 } }, total_value: position.assets || 0 } : {}
+      }
+      const res = await fetch(`${base}/api/chat/${selected.symbol}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      if (!res.ok) throw new Error('对话失败')
+      const data = await res.json()
+      const content = data?.content || '暂无回答'
+      setMessages((m) => [...m, { role: 'ai', content }])
+    } catch (e) {
+      setMessages((m) => [...m, { role: 'ai', content: '服务异常，请稍后重试' }])
+    }
   }
 
   return (

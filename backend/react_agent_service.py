@@ -12,14 +12,31 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import structlog
 
-from langchain.agents import AgentExecutor, create_openai_tools_agent
+HAS_LC_AGENT = True
+try:
+    from langchain.agents import AgentExecutor, create_openai_tools_agent
+except Exception:
+    HAS_LC_AGENT = False
+    AgentExecutor = None
+    create_openai_tools_agent = None
 from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.tools import tool
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
+try:
+    from langchain_core.tools import tool
+except Exception:
+    try:
+        from langchain.tools import tool
+    except Exception:
+        def tool(func):
+            return func
 from dotenv import load_dotenv
 
-# 加载环境变量
+# 加载环境变量（同时尝试项目根与 backend/.env）
 load_dotenv()
+try:
+    load_dotenv(Path(__file__).parent / ".env")
+except Exception:
+    pass
 
 # 配置日志
 logger = structlog.get_logger()
@@ -466,34 +483,20 @@ class StockAnalysisAgent:
         # 获取工具
         self.tools = get_all_tools()
         
-        # 创建 Prompt
-        self.prompt = self._create_prompt()
-        
-        # 创建 Agent
-        self.agent = create_openai_tools_agent(
-            llm=self.llm,
-            tools=self.tools,
-            prompt=self.prompt
-        )
-        
-        # 创建执行器
-        self.executor = AgentExecutor(
-            agent=self.agent,
-            tools=self.tools,
-            verbose=True,
-            max_iterations=10,
-            return_intermediate_steps=True
-        )
+        # 根据可用性选择执行方式
+        # 统一改为原生 Tool Calling 执行（兼容 1.x）
+        self.prompt = None
+        self.agent = None
+        self.executor = None
+        self.llm_with_tools = self.llm.bind_tools(self.tools)
+        logger.info("Tool Calling 模式初始化完成", model=AgentConfig.OPENAI_MODEL, tools_count=len(self.tools))
         
         # 创建解析器
         self.parser = ResultParser()
-        
-        logger.info("ReAct Agent 初始化完成", 
-                   model=AgentConfig.OPENAI_MODEL,
-                   tools_count=len(self.tools))
+        self.histories: Dict[str, List[BaseMessage]] = {}
     
-    def _create_prompt(self) -> ChatPromptTemplate:
-        """创建 Agent 提示词"""
+    def _create_prompt(self):
+        """"""
         system_message = """你是一位专业的股票分析师，擅长综合分析股票的消息面、技术面和基本面。
 
 你的任务是：
@@ -521,14 +524,7 @@ class StockAnalysisAgent:
 
 请用中文回答，分析要专业且易懂。"""
         
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_message),
-            MessagesPlaceholder(variable_name="chat_history", optional=True),
-            ("human", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad")
-        ])
-        
-        return prompt
+        return None
     
     def _build_query(
         self, 
@@ -587,19 +583,39 @@ class StockAnalysisAgent:
             # 1. 构建查询
             input_query = self._build_query(symbol, analysis_type, portfolio)
             
-            # 2. 异步执行 Agent（将同步代码包装为异步）
-            result = await asyncio.to_thread(
-                self.executor.invoke,
-                {"input": input_query}
-            )
-            
-            # 3. 提取结果
-            final_answer = result.get("output", "")
-            intermediate_steps = result.get("intermediate_steps", [])
-            
+            # 2. 原生 Tool Calling 循环执行（分析不依赖历史，但会在结束后写入历史）
+            messages = [HumanMessage(content=input_query)]
+            intermediate_steps = []
+            debug_news = None
+            tools_map = {t.name if hasattr(t, 'name') else t.__name__: t for t in self.tools}
+            for _ in range(6):
+                ai: AIMessage = await asyncio.to_thread(self.llm_with_tools.invoke, messages)
+                tool_calls = getattr(ai, "tool_calls", None)
+                if not tool_calls:
+                    final_answer = ai.content
+                    break
+                messages.append(ai)
+                for call in tool_calls:
+                    name = call.get("name")
+                    args = call.get("args", {})
+                    call_id = call.get("id")
+                    tool_obj = tools_map.get(name)
+                    output = self._safe_call_tool(tool_obj, **args) if tool_obj else f"未知工具: {name}"
+                    intermediate_steps.append({"tool": name or "unknown", "input": args, "output": output})
+                    if name == "get_news":
+                        try:
+                            tick = (args.get("symbol") or symbol).upper()
+                            data = av_client._request({"function": "NEWS_SENTIMENT", "tickers": tick, "limit": 5})
+                            debug_news = {"news_items": data.get("feed", [])}
+                        except Exception:
+                            pass
+                    messages.append(ToolMessage(content=output, tool_call_id=call_id))
+            else:
+                final_answer = ai.content
+
             # 4. 格式化步骤
             formatted_steps = self._format_steps(intermediate_steps)
-            tools_used = [step[0].tool for step in intermediate_steps]
+            tools_used = [s.get("tool", "unknown") for s in intermediate_steps]
             
             # 5. 构建原始结果
             agent_result = {
@@ -607,14 +623,16 @@ class StockAnalysisAgent:
                 "timestamp": datetime.now().isoformat(),
                 "final_answer": final_answer,
                 "steps": formatted_steps,
-                "tools_used": tools_used
+                "tools_used": tools_used,
+                **({"news_data": debug_news} if debug_news else {})
             }
             
             # 6. 智能解析结果
             parsed = self.parser.parse(agent_result)
-            
+
             # 7. 保存对话历史
             self._save_conversation(agent_result)
+            self._update_history(symbol, messages + [AIMessage(content=final_answer)])
             
             # 8. 返回兼容 langgraph_service 的格式
             response = {
@@ -650,13 +668,22 @@ class StockAnalysisAgent:
     def _format_steps(self, steps: List) -> List[Dict]:
         """格式化中间步骤"""
         formatted = []
-        for idx, (action, observation) in enumerate(steps, 1):
-            formatted.append({
-                "step": idx,
-                "tool": action.tool,
-                "input": action.tool_input,
-                "output": str(observation)[:500]  # 限制长度
-            })
+        if steps and isinstance(steps[0], tuple):
+            for idx, (action, observation) in enumerate(steps, 1):
+                formatted.append({
+                    "step": idx,
+                    "tool": getattr(action, "tool", "unknown"),
+                    "input": getattr(action, "tool_input", None),
+                    "output": str(observation)[:500]
+                })
+        else:
+            for idx, s in enumerate(steps, 1):
+                formatted.append({
+                    "step": idx,
+                    "tool": s.get("tool", "unknown"),
+                    "input": None,
+                    "output": str(s.get("output", ""))[:500]
+                })
         return formatted
     
     def _save_conversation(self, result: Dict[str, Any]):
@@ -676,8 +703,62 @@ class StockAnalysisAgent:
         except Exception as e:
             logger.warning("保存对话历史失败", error=str(e))
 
+    def _update_history(self, symbol: str, new_messages: List[BaseMessage]):
+        try:
+            prev = self.histories.get(symbol.upper(), [])
+            merged = prev + new_messages
+            # 历史长度控制，避免无限增长
+            self.histories[symbol.upper()] = merged[-50:]
+        except Exception:
+            pass
+
+    def _safe_call_tool(self, tool_obj, **kwargs) -> str:
+        """兼容调用 LangChain StructuredTool 或普通函数"""
+        try:
+            if hasattr(tool_obj, "invoke"):
+                return tool_obj.invoke(kwargs)
+            if hasattr(tool_obj, "run"):
+                return tool_obj.run(kwargs)
+            if callable(tool_obj):
+                return tool_obj(**kwargs)
+            return str(tool_obj)
+        except Exception as e:
+            return f"工具调用失败: {e}"
+
+    async def answer_question(self, symbol: str, question: str, portfolio: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        try:
+            base = f"请基于{symbol.upper()}的消息面、技术面和基本面，回答：{question}。需要时可调用工具获取数据。"
+            if portfolio and portfolio.get("positions"):
+                pos = portfolio["positions"].get(symbol, {})
+                if pos:
+                    base += f" 用户持仓：{pos.get('shares', 0)}股，成本价${pos.get('avg_cost', 0)}。"
+            history = list(self.histories.get(symbol.upper(), []))
+            messages = history + [HumanMessage(content=base)]
+            steps = []
+            tools_map = {t.name if hasattr(t, 'name') else t.__name__: t for t in self.tools}
+            for _ in range(6):
+                ai: AIMessage = await asyncio.to_thread(self.llm_with_tools.invoke, messages)
+                tool_calls = getattr(ai, "tool_calls", None)
+                if not tool_calls:
+                    final = ai.content
+                    break
+                messages.append(ai)
+                for call in tool_calls:
+                    name = call.get("name")
+                    args = call.get("args", {})
+                    call_id = call.get("id")
+                    tool_obj = tools_map.get(name)
+                    output = self._safe_call_tool(tool_obj, **args) if tool_obj else f"未知工具: {name}"
+                    steps.append({"tool": name or "unknown", "input": args, "output": output})
+                    messages.append(ToolMessage(content=output, tool_call_id=call_id))
+            else:
+                final = ai.content
+            self._update_history(symbol, [HumanMessage(content=base), AIMessage(content=final)])
+            return {"content": final, "steps": steps, "timestamp": datetime.now().isoformat()}
+        except Exception as e:
+            return {"error": f"对话失败: {e}", "timestamp": datetime.now().isoformat()}
+
 
 # ==================== 全局实例 ====================
 # 创建全局 Agent 实例（单例模式）
 stock_analysis_agent = StockAnalysisAgent()
-

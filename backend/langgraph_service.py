@@ -379,10 +379,15 @@ class StockAnalysisAgent:
         """执行股票分析"""
         logger.info(f"开始股票分析: {symbol}, 类型: {analysis_type}")
         
+        # 根据是否提供持仓信息构建两版提示词
+        base_prompt = f"请全面分析股票 {symbol}：消息面、技术面与基本面，并给出买入/持有/卖出建议及置信度。"
+        if portfolio and portfolio.get("positions") and portfolio["positions"].get(symbol):
+            pos = portfolio["positions"][symbol]
+            base_prompt += f" 用户持仓：{pos.get('shares', 0)}股，成本价${pos.get('avg_cost', 0)}；请结合持仓给出加仓/减仓/持有建议。"
         initial_state = AnalysisState(
             symbol=symbol,
             analysis_type=analysis_type,
-            messages=[HumanMessage(content=f"请分析股票 {symbol}")],
+            messages=[HumanMessage(content=base_prompt)],
             stock_data={},
             technical_data={},
             news_data=[],
@@ -402,7 +407,10 @@ class StockAnalysisAgent:
                 "confidence_score": result["confidence_score"],
                 "summary": result["analysis_result"].get("summary", ""),
                 "key_metrics": result["analysis_result"].get("key_metrics", {}),
-                "detailed_analysis": result["analysis_result"],
+                "detailed_analysis": {
+                    **result["analysis_result"],
+                    **({"news_data": result.get("news_data")} if result.get("news_data") else {})
+                },
                 "messages": [msg.content for msg in result["messages"]],
                 "timestamp": datetime.now().isoformat()
             }

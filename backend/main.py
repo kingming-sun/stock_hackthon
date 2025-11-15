@@ -7,7 +7,23 @@ import httpx
 import asyncio
 from datetime import datetime
 import structlog
-from backend.react_agent_service import stock_analysis_agent
+# 优先使用 ReAct Agent，失败则回退到 LangGraph Agent
+try:
+    from backend.react_agent_service import stock_analysis_agent as _react_agent
+    stock_analysis_agent = _react_agent
+    ACTIVE_AGENT = "react"
+except Exception as e:
+    # 回退到 LangGraph
+    try:
+        from backend.langgraph_service import stock_analysis_agent as _lg_agent
+        stock_analysis_agent = _lg_agent
+        ACTIVE_AGENT = "langgraph"
+    except Exception:
+        stock_analysis_agent = None
+        ACTIVE_AGENT = "none"
+    # 记录 React Agent 导入失败原因
+    import logging
+    logging.getLogger(__name__).warning("React Agent 导入失败，已回退到 LangGraph", exc_info=e)
 from dotenv import load_dotenv
 
 # 加载环境变量
@@ -17,6 +33,7 @@ load_dotenv()
 logger = structlog.get_logger()
 PORT = int(os.getenv("PORT", "8000"))
 DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+ANALYSIS_DEBUG = os.getenv("ANALYSIS_DEBUG", "true").lower() == "true"
 
 app = FastAPI(
     title="股票分析API",
@@ -72,6 +89,17 @@ class AnalysisResult(BaseModel):
     recommendation: str
     confidence_score: float
     timestamp: datetime
+    detailed_analysis: Optional[Dict[str, Any]] = None
+    debug: Optional[Dict[str, Any]] = None
+
+class ChatRequest(BaseModel):
+    question: str
+    portfolio: Optional[Dict[str, Any]] = None
+
+class ChatReply(BaseModel):
+    content: str
+    timestamp: datetime
+    debug: Optional[Dict[str, Any]] = None
 
 # Alpha Vantage API服务
 class AlphaVantageService:
@@ -236,6 +264,8 @@ async def analyze_stock(symbol: str, request: AnalysisRequest):
     logger.info(f"智能分析股票: {symbol}, 分析类型: {request.analysis_type}")
     
     try:
+        if stock_analysis_agent is None:
+            raise HTTPException(status_code=503, detail="分析服务不可用")
         # 使用LangGraph Agent进行分析
         result = await stock_analysis_agent.analyze_stock(
             symbol=symbol.upper(),
@@ -253,7 +283,9 @@ async def analyze_stock(symbol: str, request: AnalysisRequest):
             key_metrics=result["key_metrics"],
             recommendation=result["recommendation"],
             confidence_score=result["confidence_score"],
-            timestamp=datetime.fromisoformat(result["timestamp"])
+            timestamp=datetime.fromisoformat(result["timestamp"]),
+            detailed_analysis=result.get("detailed_analysis"),
+            debug=(result.get("detailed_analysis") if ANALYSIS_DEBUG else None)
         )
         
     except Exception as e:
@@ -270,3 +302,24 @@ if __name__ == "__main__":
     import uvicorn
     host = os.getenv("HOST", "0.0.0.0")
     uvicorn.run(app, host=host, port=PORT, reload=True)
+@app.post("/api/chat/{symbol}", response_model=ChatReply)
+async def chat_with_agent(symbol: str, request: ChatRequest):
+    logger.info(f"自由对话: {symbol}")
+    try:
+        if stock_analysis_agent is None:
+            raise HTTPException(status_code=503, detail="分析服务不可用")
+        result = await stock_analysis_agent.answer_question(
+            symbol=symbol.upper(),
+            question=request.question,
+            portfolio=request.portfolio
+        )
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return ChatReply(
+            content=result["content"],
+            timestamp=datetime.fromisoformat(result["timestamp"]),
+            debug=(result if ANALYSIS_DEBUG else None)
+        )
+    except Exception as e:
+        logger.error(f"自由对话失败: {symbol}", error=str(e))
+        raise HTTPException(status_code=500, detail=f"自由对话失败: {str(e)}")
